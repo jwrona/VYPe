@@ -70,7 +70,7 @@ int var_list_push(struct var_list *vl, const char *id, data_type_t data_type)
         return 0; //success
 }
 
-data_type_t var_list_first(struct var_list *vl, char **id)
+data_type_t var_list_first(struct var_list *vl, const char **id)
 {
         data_type_t data_type;
 

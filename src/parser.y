@@ -32,6 +32,7 @@ struct block {
 
 int yylex(); //defined in scanner.h
 
+/* Error handling declarations. */
 static void yyerror (const int *return_code, char const *s);
 static void set_error(int code, const char *id, const char *message);
 
@@ -43,14 +44,19 @@ static void * block_put(struct block *block, const char *id,
 static struct block_record * block_get(const struct block *block,
                                        const char *id);
 
+/* Semantic actions declarations. */
 static int sem_function_declaration(const char *id, data_type_t ret_type,
                               struct var_list *type_list);
 static int sem_function_definition(char *id, data_type_t ret_type,
                             struct var_list *type_list);
+int sem_variable_definition_statement(data_type_t data_type,
+                                      struct var_list *id_list);
+int sem_expr_identifier(char *id, data_type_t *data_type);
 
 
 struct block *top_block = NULL;
 int *glob_return_code;
+size_t expr_res = 0;
 %}
 
 /* pairs with bison-bridge */
@@ -82,7 +88,9 @@ int *glob_return_code;
 
 /* Nonterminals. */
 %type <data_type> data_type type
+%type <data_type> expression
 %type <var_list> parameter_type_list parameter_identifier_list
+%type <var_list> identifier_list
 
 /* Operator associativity and precedence. */
 %left OR_OP
@@ -92,7 +100,7 @@ int *glob_return_code;
 %left '+' '-'
 %left '*' '/' '%'
 %left NEG /* phony terminal symbol for unary negation '!' */
-/*%nonassoc '()' */
+%nonassoc '(' ')'
 
 %initial-action
 {
@@ -110,7 +118,8 @@ int *glob_return_code;
 | Grammar rules. |
 --------------- */
 
-prog:
+/* Global program rules. */
+program:
           declaration_list
         {
                 /* Free block for functions and global variables. */
@@ -124,20 +133,20 @@ declaration_list:
         ;
 
 declaration:
-          function_declaration
+          function_declaration ';'
         | function_definition
         ;
 
 
 /* Function declaration rules. */
 function_declaration:
-          type IDENTIFIER '(' VOID ')' ';'
+          type IDENTIFIER '(' VOID ')'
         {
                 if (sem_function_declaration($2, $1, NULL) != 0) {
                         YYERROR;
                 }
         }
-        | type IDENTIFIER '(' parameter_type_list ')' ';'
+        | type IDENTIFIER '(' parameter_type_list ')'
         {
                 if (sem_function_declaration($2, $1, $4)  != 0) {
                         YYERROR;
@@ -214,7 +223,7 @@ parameter_identifier_list:
         }
         ;
 
-/******************************************/
+/* Statement. */
 compound_statement:
           '{'
         { //mid-rule action
@@ -235,58 +244,150 @@ statement_list:
         ;
 
 statement:
-          variable_definition_statement
-        | assignment_statement
+          variable_definition_statement ';'
+        | assignment_statement ';'
         | selection_statement
         | iteration_statement
-        | return_statement
-        | expression
+        | function_call ';'
+        | return_statement ';'
+ /*       | expression */ /* to tu asi nema byt */
         ;
 
+/* Variable definition statement. */
 variable_definition_statement:
-          data_type identifier_list ';'
+          data_type identifier_list
+        {
+                if (sem_variable_definition_statement($1, $2) != 0) {
+                        YYERROR;
+                }
+        }
         ;
 
 identifier_list:
           IDENTIFIER
         {
-                free($1);
+                $$ = var_list_init();
+                if ($$ == NULL) {
+                        set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        YYERROR;
+                }
+
+                /* Push only ID, we don't know type yet, put VOID instead. */
+                if (var_list_push($$, $1, DATA_TYPE_VOID) != 0) {
+                        set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        YYERROR;
+                }
         }
         | identifier_list ',' IDENTIFIER
         {
-                free($3);
+                /* Push only ID, we don't know type yet, put VOID instead. */
+                if (var_list_push($$, $3, DATA_TYPE_VOID) != 0) {
+                        set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        YYERROR;
+                }
         }
         ;
 
+/* Assignment statement. */
 assignment_statement:
-          IDENTIFIER '=' expression ';'
+          IDENTIFIER '=' expression
         {
-                //printf("assignment, \"%s\" ", $1);
-                //if (block_get(top_block, $1) != NULL) {
-                //        printf("was defined\n");
-                //} else {
-                //        printf("was not defined\n");
-                //}
+                if (block_get(top_block, $1) == NULL) {
+                        set_error(RET_SEMANTIC, $1, "used in assignment, but "
+                                  "undeclared");
+                        YYERROR;
+                }
+                free($1);
         }
         ;
 
+/* Selection statement. */
 selection_statement:
-          IF '(' expression ')' compound_statement ELSE compound_statement { printf("selection_statement\n"); }
+          IF '(' expression ')' compound_statement ELSE compound_statement
+        {
+                printf("selection_statement\n");
+        }
         ;
 
+/* Iteration statement. */
 iteration_statement:
-          WHILE '(' expression ')' compound_statement { printf("iteration_statement\n"); }
+          WHILE '(' expression ')' compound_statement
+        {
+                printf("iteration_statement\n");
+        }
         ;
 
+/* Function call statement. */
+function_call:
+          IDENTIFIER '(' ')' { printf("function_call\n"); }
+        | IDENTIFIER '(' expression_list ')' { printf("function_call\n"); }
+        ;
+
+expression_list:
+          expression
+        | expression_list ',' expression
+        ;
+
+/* Return statement. */
 return_statement:
-          RETURN ';' { printf("return_statement\n"); }
-        | RETURN expression ';' { printf("return_statement\n"); }
+          RETURN { printf("return_statement\n"); }
+        | RETURN expression { printf("return_statement\n"); }
         ;
 
+
+/* Expressions. */
 expression:
-          BREAK
+          /* Literals. */
+          INT_LIT { printf("t%zu = %d\n", expr_res++, $1); $$ = DATA_TYPE_INT; }
+        | CHAR_LIT { printf("t%zu = '%c' (%d)\n", expr_res++, $1, $1); $$ = DATA_TYPE_CHAR; }
+        | STRING_LIT { printf("t%zu = %s\n", expr_res++, $1); $$ = DATA_TYPE_STRING; }
+
+          /* Identifier aka variable. */
+        | IDENTIFIER
+        {
+                printf("t%zu = %s\n", expr_res++, $1);
+                if (sem_expr_identifier($1, &$$) != 0) {
+                        YYERROR;
+                }
+        }
+
+         /* Parenthesis, cast and function call. */
+         /* TODO: associativity */
+        | '(' expression ')' { printf("zavorky\n"); }
+        | '(' data_type ')' expression { printf("pretypovani\n"); }
+        | function_call { printf("function_call\n"); }
+
+          /* Logical unary negation. */
+        | '!' expression %prec NEG { printf("negace\n"); }
+
+          /* Integer multiplicative. */
+        | expression '*' expression { printf("krat\n"); }
+        | expression '/' expression { printf("deleno\n"); }
+        | expression '%' expression { printf("modulo\n"); }
+
+          /* Integer additive. */
+        | expression '+' expression { printf("plus\n"); }
+        | expression '-' expression { printf("minus\n"); }
+
+          /* Relation. */
+        | expression '<' expression { printf("mene nez\n"); }
+        | expression LE_OP expression { printf("mene rovno nez\n"); }
+        | expression '>' expression { printf("vice nez\n"); }
+        | expression GE_OP expression { printf("vice rovno nez\n"); }
+
+          /* Comparison. */
+        | expression EQ_OP expression { printf("rovnost\n"); }
+        | expression NE_OP expression { printf("nerovnost\n"); }
+
+          /* Logical AND. */
+        | expression AND_OP expression { printf("AND\n"); }
+
+          /* Logical OP. */
+        | expression OR_OP expression { printf("OR\n"); }
         ;
 
+
+/* Types and data types. */
 data_type:
           INT { $$ = DATA_TYPE_INT; }
         | CHAR { $$ = DATA_TYPE_CHAR; }
@@ -303,6 +404,7 @@ type:
 | Epilogue. |
 -----------*/
 
+/* Error handling definitions. */
 static void yyerror (const int *return_code, char const *s)
 {
         (void)return_code;
@@ -350,7 +452,6 @@ static struct block * block_free(struct block *block)
         assert(block != NULL);
 
         prev = block->prev;
-        //TODO: add free callbacks
         ht_free(block->symbol_table, free, free);
         free(block);
 
@@ -361,10 +462,22 @@ static struct block * block_free(struct block *block)
 static void * block_put(struct block *block, const char *id,
                         const struct block_record *br)
 {
+        const struct block_record *func_br;
+
+
         assert(block != NULL && id != NULL);
 
-        if (ht_read(block->symbol_table, id) != NULL) { //id already defined
+        /* Check for redefinition in the same scope. */
+        if (ht_read(block->symbol_table, id) != NULL) { //ID already defined
                 set_error(RET_SEMANTIC, id, "redeclared in the same scope");
+                return NULL;
+        }
+
+        /* Check if identifier wasn't used for function. */
+        func_br = block_get(block, id);
+        if (func_br != NULL && func_br->symbol_type == DATA_TYPE_FUNCTION) {
+                set_error(RET_SEMANTIC, id, "identifier already used for "
+                          "function");
                 return NULL;
         }
 
@@ -382,18 +495,19 @@ static struct block_record * block_get(const struct block *block,
 
         while (block != NULL) { //loop through this and all the previous blocks
                 br = ht_read(block->symbol_table, id);
-                if (br != NULL) { //id found
+                if (br != NULL) { //ID found
                         return br;
-                } else { //id not found, go lower
+                } else { //ID not found, go lower
                         block = block->prev;
                 }
         }
 
 
-        return NULL; //id not found
+        return NULL; //ID not found
 }
 
 
+/* Semantic actions definitions. */
 static int sem_function_declaration(const char *id, data_type_t ret_type,
                                     struct var_list *type_list)
 {
@@ -418,14 +532,14 @@ static int sem_function_declaration(const char *id, data_type_t ret_type,
         }
 
 
-        return 0;
+        return 0; //success
 }
 
 static int sem_function_definition(char *id, data_type_t ret_type,
                                    struct var_list *type_list)
 {
         struct block_record *br;
-        char *param_id;
+        const char *param_id;
         data_type_t param_type;
 
 
@@ -464,7 +578,6 @@ static int sem_function_definition(char *id, data_type_t ret_type,
                         return 1;
                 }
 
-        printf("function %s: \n", id);
                 free(id); //definition ID is the same as declaration ID
         } else { //ID is new, create new block record
                 br = malloc(sizeof (struct block_record));
@@ -473,7 +586,7 @@ static int sem_function_definition(char *id, data_type_t ret_type,
                         return 1;
                 }
 
-                /* Insert recort into symbol table. Error should not happen. */
+                /* Insert record into symbol table. Error should not happen. */
                 assert(block_put(top_block, id, br) != NULL);
         }
 
@@ -488,22 +601,82 @@ static int sem_function_definition(char *id, data_type_t ret_type,
                 return 1;
         }
 
-        if (br->var_list != NULL) {
-                param_type = var_list_first(br->var_list, &param_id);
+        if (br->var_list != NULL) { //parameter list is not NULL
+                /* Add all params into symbol table for the function scope. */
+                param_type = var_list_first(br->var_list, &param_id); //first
                 while (param_type != DATA_TYPE_UNSET) {
-                        printf("\t%s: %d\n", param_id, param_type);
-                        free(param_id);
+                        struct block_record *param_br =
+                                           malloc(sizeof (struct block_record));
+
+                        if (param_br == NULL) {
+                                set_error(RET_INTERNAL, __func__,
+                                          "memory exhausted");
+                                return 1;
+                        }
+
+                        param_br->symbol_type = param_type;
+                        if (block_put(top_block, param_id, param_br) == NULL) {
+                                return 1; //two parameters of the same ID
+                        }
 
                         param_type = var_list_first(br->var_list, &param_id);
                 }
-        }
 
-
-        /* Definition variable list is no longer needed. */
-        if (br->var_list != NULL) {
+                /* Definition variable list is no longer needed. */
                 var_list_free(br->var_list);
         }
 
 
-        return 0;
+        return 0; //success
+}
+
+int sem_variable_definition_statement(data_type_t data_type,
+                                      struct var_list *id_list)
+{
+        const char *id;
+
+
+        assert(id_list != NULL);
+
+        while (var_list_first(id_list, &id) != DATA_TYPE_UNSET) {
+                struct block_record *br = malloc(sizeof (struct block_record));
+
+                if (br == NULL) {
+                        set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        return 1;
+                }
+
+                br->symbol_type = data_type; //same type for the whole list
+                if (block_put(top_block, id, br) == NULL) {
+                        return 1; //two variables in this scope of the same ID
+                }
+
+        }
+
+        /* Variable identifier list is no longer needed. */
+        var_list_free(id_list);
+
+
+        return 0; //success
+}
+
+int sem_expr_identifier(char *id, data_type_t *data_type)
+{
+        const struct block_record *br;
+
+
+        assert(id != NULL);
+
+        br = block_get(top_block, id);
+        if (br == NULL) {
+                set_error(RET_SEMANTIC, id, "used in expression, but "
+                          "undeclared");
+                return 1;
+        }
+
+        free(id); //no longer needed
+        *data_type = br->symbol_type;
+
+
+        return 0; //success
 }
