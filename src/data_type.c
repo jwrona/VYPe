@@ -2,7 +2,6 @@
 
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <assert.h>
 
 
@@ -14,6 +13,7 @@ struct vl_node { //var_list node
 
 struct var_list { //variable list structure
         struct vl_node *head; //pointer to the first node or NULL
+        size_t length;
 };
 
 
@@ -65,6 +65,7 @@ int var_list_push(struct var_list *vl, const char *id, data_type_t data_type)
                 }
                 last->next = new;
         }
+        vl->length++;
 
 
         return 0; //success
@@ -89,6 +90,7 @@ data_type_t var_list_first(struct var_list *vl, const char **id)
 
                 free(first);
         }
+        vl->length--;
 
 
         return data_type; //success
@@ -122,6 +124,13 @@ int var_list_are_equal(const struct var_list *vl_a, const struct var_list *vl_b)
                 na = na->next;
                 nb = nb->next;
         }
+}
+
+size_t var_list_get_length(const struct var_list *vl)
+{
+        assert(vl != NULL);
+
+        return vl->length;
 }
 
 char * var_list_to_str(const struct var_list *vl)

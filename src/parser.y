@@ -21,6 +21,7 @@ struct block_record {
         /* Function specific variables. */
         func_state_t func_state; //declared or defined
         struct var_list *var_list; //return type and parameter list
+        size_t params_cnt; //could be merged into var_list
         data_type_t ret_type;
 };
 
@@ -51,7 +52,10 @@ static int sem_function_definition(char *id, data_type_t ret_type,
                             struct var_list *type_list);
 int sem_variable_definition_statement(data_type_t data_type,
                                       struct var_list *id_list);
+int sem_function_call(char *id, size_t params_cnt, data_type_t *ret_dt);
+
 int sem_expr_identifier(char *id, data_type_t *data_type);
+int sem_expr_cast(data_type_t dt_to, data_type_t dt_from);
 
 
 struct block *top_block = NULL;
@@ -74,6 +78,7 @@ size_t expr_res = 0;
         char *string_lit;
         data_type_t data_type;
         struct var_list *var_list;
+        size_t expression_cnt;
 }
 
 /* Tokens. */
@@ -89,8 +94,10 @@ size_t expr_res = 0;
 /* Nonterminals. */
 %type <data_type> data_type type
 %type <data_type> expression
+%type <data_type> function_call
 %type <var_list> parameter_type_list parameter_identifier_list
 %type <var_list> identifier_list
+%type <expression_cnt> expression_list
 
 /* Operator associativity and precedence. */
 %left OR_OP
@@ -304,86 +311,221 @@ assignment_statement:
 /* Selection statement. */
 selection_statement:
           IF '(' expression ')' compound_statement ELSE compound_statement
-        {
-                printf("selection_statement\n");
-        }
         ;
 
 /* Iteration statement. */
 iteration_statement:
           WHILE '(' expression ')' compound_statement
-        {
-                printf("iteration_statement\n");
-        }
         ;
 
 /* Function call statement. */
 function_call:
-          IDENTIFIER '(' ')' { printf("function_call\n"); }
-        | IDENTIFIER '(' expression_list ')' { printf("function_call\n"); }
+          IDENTIFIER '(' ')'
+        {
+                if (sem_function_call($1, 0, &$$) != 0) { //put dt into $$
+                        YYERROR;
+                }
+        }
+        | IDENTIFIER '(' expression_list ')'
+        {
+                if (sem_function_call($1, $3, &$$) != 0) { //put dt into $$
+                        YYERROR;
+                }
+        }
         ;
 
 expression_list:
-          expression
-        | expression_list ',' expression
+          expression { $$ = 1; }
+        | expression_list ',' expression { $$++; }
         ;
 
 /* Return statement. */
 return_statement:
-          RETURN { printf("return_statement\n"); }
-        | RETURN expression { printf("return_statement\n"); }
+          RETURN
+        | RETURN expression
         ;
 
 
 /* Expressions. */
 expression:
           /* Literals. */
-          INT_LIT { printf("t%zu = %d\n", expr_res++, $1); $$ = DATA_TYPE_INT; }
-        | CHAR_LIT { printf("t%zu = '%c' (%d)\n", expr_res++, $1, $1); $$ = DATA_TYPE_CHAR; }
-        | STRING_LIT { printf("t%zu = %s\n", expr_res++, $1); $$ = DATA_TYPE_STRING; }
+          INT_LIT
+        {
+                //printf("t%zu = %d\n", expr_res++, $1);
+                $$ = DATA_TYPE_INT;
+        }
+        | CHAR_LIT
+        {
+                //printf("t%zu = '%c' (%d)\n", expr_res++, $1, $1);
+                $$ = DATA_TYPE_CHAR;
+        }
+        | STRING_LIT
+        {
+                //printf("t%zu = %s\n", expr_res++, $1);
+                $$ = DATA_TYPE_STRING;
+        }
 
           /* Identifier aka variable. */
         | IDENTIFIER
         {
-                printf("t%zu = %s\n", expr_res++, $1);
-                if (sem_expr_identifier($1, &$$) != 0) {
+                //printf("t%zu = %s\n", expr_res++, $1);
+                if (sem_expr_identifier($1, &$$) != 0) { //put data type into $$
                         YYERROR;
                 }
         }
 
          /* Parenthesis, cast and function call. */
          /* TODO: associativity */
-        | '(' expression ')' { printf("zavorky\n"); }
-        | '(' data_type ')' expression { printf("pretypovani\n"); }
-        | function_call { printf("function_call\n"); }
+        | '(' expression ')' { $$ = $2; }
+        | '(' data_type ')' expression
+        {
+                if (sem_expr_cast($2, $4) != 0) {
+                        YYERROR;
+                }
+
+                $$ = $2; //cast was successful, use new data type
+        }
+        | function_call { $$ = $1; }
 
           /* Logical unary negation. */
-        | '!' expression %prec NEG { printf("negace\n"); }
+        | '!' expression %prec NEG
+        {
+                if ($2 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "!", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT;
+        }
 
           /* Integer multiplicative. */
-        | expression '*' expression { printf("krat\n"); }
-        | expression '/' expression { printf("deleno\n"); }
-        | expression '%' expression { printf("modulo\n"); }
+        | expression '*' expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "*", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT;
+        }
+        | expression '/' expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "/", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT;
+        }
+        | expression '%' expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "%", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT;
+        }
 
           /* Integer additive. */
-        | expression '+' expression { printf("plus\n"); }
-        | expression '-' expression { printf("minus\n"); }
+        | expression '+' expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "+", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT;
+        }
+        | expression '-' expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "-", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT;
+        }
 
           /* Relation. */
-        | expression '<' expression { printf("mene nez\n"); }
-        | expression LE_OP expression { printf("mene rovno nez\n"); }
-        | expression '>' expression { printf("vice nez\n"); }
-        | expression GE_OP expression { printf("vice rovno nez\n"); }
+        | expression '<' expression
+        {
+                if ($1 != $3) {
+                        set_error(RET_SEMANTIC, "<", "incompatible data types");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
+        | expression LE_OP expression
+        {
+                if ($1 != $3) {
+                        set_error(RET_SEMANTIC, "<=","incompatible data types");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
+        | expression '>' expression
+        {
+                if ($1 != $3) {
+                        set_error(RET_SEMANTIC, ">", "incompatible data types");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
+        | expression GE_OP expression
+        {
+                if ($1 != $3) {
+                        set_error(RET_SEMANTIC, ">=","incompatible data types");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
 
           /* Comparison. */
-        | expression EQ_OP expression { printf("rovnost\n"); }
-        | expression NE_OP expression { printf("nerovnost\n"); }
+        | expression EQ_OP expression
+        {
+                if ($1 != $3) {
+                        set_error(RET_SEMANTIC, "==","incompatible data types");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
+        | expression NE_OP expression
+        {
+                if ($1 != $3) {
+                        set_error(RET_SEMANTIC, "!=","incompatible data types");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
 
           /* Logical AND. */
-        | expression AND_OP expression { printf("AND\n"); }
+        | expression AND_OP expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "&&", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
 
           /* Logical OP. */
-        | expression OR_OP expression { printf("OR\n"); }
+        | expression OR_OP expression
+        {
+                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
+                        set_error(RET_SEMANTIC, "||", "incompatible data type");
+                        YYERROR;
+                }
+
+                $$ = DATA_TYPE_INT; //actually 0 or 1
+        }
         ;
 
 
@@ -524,6 +666,7 @@ static int sem_function_declaration(const char *id, data_type_t ret_type,
         br->symbol_type = DATA_TYPE_FUNCTION;
         br->func_state = FUNC_STATE_DECLARED;
         br->var_list = type_list; //possible NULL for VOID type list
+        br->params_cnt = (type_list) ? var_list_get_length(type_list) : 0;
         br->ret_type = ret_type;
 
         /* Insert record into symbol table. Error on redefinition. */
@@ -593,6 +736,7 @@ static int sem_function_definition(char *id, data_type_t ret_type,
         br->symbol_type = DATA_TYPE_FUNCTION;
         br->func_state = FUNC_STATE_DEFINED;
         br->var_list = type_list; //possible NULL for VOID type list
+        br->params_cnt = (type_list) ? var_list_get_length(type_list) : 0;
         br->ret_type = ret_type;
 
 
@@ -660,6 +804,40 @@ int sem_variable_definition_statement(data_type_t data_type,
         return 0; //success
 }
 
+int sem_function_call(char *id, size_t params_cnt, data_type_t *ret_dt)
+{
+        const struct block_record *br;
+
+
+        assert(id != NULL);
+
+        br = block_get(top_block, id);
+        if (br == NULL) {
+                set_error(RET_SEMANTIC, id, "called, but undeclared");
+                return 1;
+        } else if (br->symbol_type != DATA_TYPE_FUNCTION) {
+                set_error(RET_SEMANTIC, id, "called, but not declared as "
+                          "function");
+                return 1;
+        }
+
+        /* TODO: should this be error? */
+        if (br->params_cnt > params_cnt) {
+                print_warning(RET_SEMANTIC, id, "too few arguments passed");
+        } else if (br->params_cnt < params_cnt) {
+                print_warning(RET_SEMANTIC, id, "too many arguments passed");
+        }
+
+        free(id); //no longer needed
+        *ret_dt = br->ret_type;
+
+        //for (size_t i = 0; i < params_cnt; ++i) {
+        //        printf("push(t%zu)\n", expr_res - i - 1);
+        //}
+
+        return 0; //success
+}
+
 int sem_expr_identifier(char *id, data_type_t *data_type)
 {
         const struct block_record *br;
@@ -679,4 +857,21 @@ int sem_expr_identifier(char *id, data_type_t *data_type)
 
 
         return 0; //success
+}
+
+int sem_expr_cast(data_type_t dt_to, data_type_t dt_from)
+{
+        if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_STRING) {
+                //character to one character long string
+                return 0; //success
+        } else if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_INT) {
+                //character's ASCII value to int
+                return 0;
+        } else if (dt_from == DATA_TYPE_INT && dt_to == DATA_TYPE_CHAR) {
+                //integer's LSB to character
+                return 0;
+        } else {
+                set_error(RET_SEMANTIC, NULL, "ilegal cast");
+                return 1; //failure
+        }
 }

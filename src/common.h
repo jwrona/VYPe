@@ -17,36 +17,43 @@ typedef enum { //program return error codes
 } return_code_t;
 
 
-static inline void print_error(return_code_t code, const char *id,
-                const char *message)
+static inline const char *get_prefix(return_code_t code)
 {
-        const char *prefix;
-
-
         switch (code) {
         case RET_LEXICAL:
-                prefix = "lexical";
-                break;
+                return "lexical";
         case RET_SYNTACTIC:
-                prefix = "syntactic";
-                break;
+                return "syntactic";
         case RET_SEMANTIC:
-                prefix = "semantic";
-                break;
+                return "semantic";
         case RET_GENER:
-                prefix = "code generation";
-                break;
+                return "code generation";
         case RET_INTERNAL:
-                prefix = "internal";
-                break;
+                return "internal";
         default:
                 assert(!"unknown return code");
         }
+}
 
+static inline void print_error(return_code_t code, const char *id,
+                const char *message)
+{
         if (id) {
-                fprintf(stderr, "%s error: \"%s\" %s\n", prefix, id, message);
+                fprintf(stderr, "%s error: \"%s\" %s\n", get_prefix(code), id,
+                                message);
         } else {
-                fprintf(stderr, "%s error: %s\n", prefix, message);
+                fprintf(stderr, "%s error: %s\n", get_prefix(code), message);
+        }
+}
+
+static inline void print_warning(return_code_t code, const char *id,
+                const char *message)
+{
+        if (id) {
+                fprintf(stderr, "%s warning: \"%s\" %s\n", get_prefix(code), id,
+                                message);
+        } else {
+                fprintf(stderr, "%s warning: %s\n", get_prefix(code), message);
         }
 }
 
