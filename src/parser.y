@@ -861,7 +861,10 @@ int sem_expr_identifier(char *id, data_type_t *data_type)
 
 int sem_expr_cast(data_type_t dt_to, data_type_t dt_from)
 {
-        if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_STRING) {
+        if (dt_from == dt_to) {
+                //cast to the same type, no operation
+                return 0; //success
+        } else if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_STRING) {
                 //character to one character long string
                 return 0; //success
         } else if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_INT) {
