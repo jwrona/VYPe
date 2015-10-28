@@ -13,6 +13,7 @@ struct vl_node { //var_list node
 
 struct var_list { //variable list structure
         struct vl_node *head; //pointer to the first node or NULL
+        struct vl_node *iter; //pointer to the current iterator node
         size_t length;
 };
 
@@ -71,29 +72,36 @@ int var_list_push(struct var_list *vl, const char *id, data_type_t data_type)
         return 0; //success
 }
 
-data_type_t var_list_first(struct var_list *vl, const char **id)
+/* Iterator: get first. */
+data_type_t var_list_it_first(struct var_list *vl, const char **id)
 {
-        data_type_t data_type;
+        assert(id != NULL);
 
-
-        assert(vl != NULL && id != NULL);
-
-        if (vl->head == NULL) {
+        if (vl == NULL || vl->head == NULL) {
+                *id = NULL; //return ID
                 return DATA_TYPE_UNSET; //list is empty
         } else { //get first node
-                struct vl_node *first = vl->head;
+                vl->iter = vl->head;
 
-                vl->head = first->next; //save new head
-
-                *id = first->id; //return ID
-                data_type = first->data_type; //return TYPE
-
-                free(first);
+                *id = vl->iter->id; //return ID
+                return vl->iter->data_type; //return TYPE
         }
-        vl->length--;
+}
 
+/* Iterator: get next. */
+data_type_t var_list_it_next(struct var_list *vl, const char **id)
+{
+        assert(id != NULL);
 
-        return data_type; //success
+        if (vl->iter->next == NULL) {
+                *id = NULL; //return ID
+                return DATA_TYPE_UNSET; //end of list
+        } else { //get next node
+                vl->iter = vl->iter->next;
+
+                *id = vl->iter->id; //return ID
+                return vl->iter->data_type; //return TYPE
+        }
 }
 
 /* Only data types are compared. */

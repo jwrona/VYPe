@@ -15,11 +15,16 @@ typedef enum {
 
 struct var_list * var_list_init(void);
 void var_list_free(struct var_list *vl);
+
 int var_list_push(struct var_list *vl, const char *id,
                 data_type_t data_type);
-data_type_t var_list_first(struct var_list *vl, const char **id);
+
+data_type_t var_list_it_first(struct var_list *vl, const char **id);
+data_type_t var_list_it_next(struct var_list *vl, const char **id);
+
 int var_list_are_equal(const struct var_list *vl_a,
                 const struct var_list *vl_b);
+
 size_t var_list_get_length(const struct var_list *vl);
 char * var_list_to_str(const struct var_list *vl);
 

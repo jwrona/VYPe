@@ -14,9 +14,11 @@ int yylex_destroy(void);
 extern FILE *yyin; //defined in scanner.c
 
 
+return_code_t return_code = RET_OK; //set also by parser
+
+
 int main(int argc, char **argv)
 {
-        return_code_t return_code = RET_OK;
         const char *input_file_name;
         const char *output_file_name;
         int yyret;
