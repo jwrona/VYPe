@@ -3,7 +3,7 @@
 #include "common.h"
 #include "data_type.h"
 #include "hash_table.h"
-
+#include "tac.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -17,6 +17,7 @@ typedef enum {
 
 struct block_record {
         data_type_t symbol_type; //int, char, string or function
+        unsigned tac_num; //number assigned in three address code
 
         /* Function specific variables. */
         func_state_t func_state; //declared or defined
@@ -60,27 +61,39 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
 static int sem_post_function_definition(void);
 static int sem_variable_definition_statement(data_type_t data_type,
                                       struct var_list *id_list);
-static int sem_assignment_statement(char *id, data_type_t dt);
-static int sem_selection_statement(data_type_t dt);
-static int sem_iteration_statement(data_type_t dt);
+static int sem_assignment_statement(char *id, struct block_record expr_br);
+static int sem_selection_statement(struct block_record expr_br);
+static int sem_iteration_statement(struct block_record expr_br);
 static int sem_function_call(char *id, struct var_list *call_type_list,
-                      data_type_t *ret_dt);
-static int sem_return_statement(data_type_t data_type);
+                             struct block_record *ret_br);
+static int sem_return_statement(struct block_record expr_br);
 
-static int sem_expr_identifier(char *id, data_type_t *data_type);
-static int sem_expr_cast(data_type_t dt_to, data_type_t dt_from);
+static int sem_expr_literal(data_type_t data_type, void *data,
+                             struct block_record *res_br);
+static int sem_expr_identifier(char *id, struct block_record *res_br);
+static int sem_expr_cast(data_type_t dt_to, struct block_record expr_br,
+                         struct block_record *res_br);
+static int sem_expr_integer_unary(struct block_record op,
+                                  struct block_record *res_br,
+                                  operator_t operator);
+static int sem_expr_integer_binary(struct block_record op1,
+                                   struct block_record op2,
+                                   struct block_record *res_br,
+                                   operator_t operator);
+static int sem_expr_relation(struct block_record op1, struct block_record op2,
+                             struct block_record *res_br, operator_t operator);
 
 
-static struct block *top_block = NULL;
-static size_t expr_res = 0;
+static struct block *top_block = NULL; //pointer to current block
+static struct tac_instruction instr; //three address code instruction
+static unsigned tac_cntr = 0; //three address code result counter
 
-extern return_code_t return_code;
+extern struct tac *tac; //three address code
 %}
 
 /* pairs with bison-bridge */
 %define api.pure
 %error-verbose
-/* %parse-param {int *return_code} */
 
 /*---------------------
 | Bison declarations. |
@@ -92,6 +105,7 @@ extern return_code_t return_code;
         char *string_lit;
         data_type_t data_type;
         struct var_list *var_list;
+        struct block_record block_record;
 }
 
 /* Tokens. */
@@ -106,8 +120,7 @@ extern return_code_t return_code;
 
 /* Nonterminals. */
 %type <data_type> data_type type
-%type <data_type> expression
-%type <data_type> function_call
+%type <block_record> expression function_call
 %type <var_list> parameter_type_list parameter_identifier_list
 %type <var_list> identifier_list expression_list
 
@@ -333,13 +346,13 @@ iteration_statement:
 function_call:
           IDENTIFIER '(' ')'
         {
-                if (sem_function_call($1, NULL, &$$) != 0) { //put dt into $$
+                if (sem_function_call($1, NULL, &$$) != 0) {
                         YYERROR;
                 }
         }
         | IDENTIFIER '(' expression_list ')'
         {
-                if (sem_function_call($1, $3, &$$) != 0) { //put dt into $$
+                if (sem_function_call($1, $3, &$$) != 0) {
                         YYERROR;
                 }
         }
@@ -350,14 +363,14 @@ expression_list:
         {
                 /* Initialize list. Push only data type, ID is unkown by now. */
                 $$ = var_list_init();
-                if ($$ == NULL || var_list_push($$, NULL, $1) != 0) {
+                if ($$ == NULL || var_list_push($$, NULL, $1.symbol_type) != 0){
                         set_error(RET_INTERNAL, __func__, "memory exhausted");
                         YYERROR;
                 }
         }
         | expression_list ',' expression
         {
-                if (var_list_push($1, NULL, $3) != 0) { //push type, ID is unk
+                if (var_list_push($1, NULL, $3.symbol_type) != 0) {
                         set_error(RET_INTERNAL, __func__, "memory exhausted");
                         YYERROR;
                 }
@@ -368,7 +381,11 @@ expression_list:
 return_statement:
           RETURN
         {
-                if (sem_return_statement(DATA_TYPE_VOID) != 0) {
+                struct block_record br = {
+                        .symbol_type = DATA_TYPE_VOID
+                };
+
+                if (sem_return_statement(br) != 0) {
                         YYERROR;
                 }
         }
@@ -386,177 +403,136 @@ expression:
           /* Literals. */
           INT_LIT
         {
-                $$ = DATA_TYPE_INT;
+                if (sem_expr_literal(DATA_TYPE_INT, &$1, &$$) != 0) {
+                        YYERROR;
+                }
         }
         | CHAR_LIT
         {
-                $$ = DATA_TYPE_CHAR;
+                if (sem_expr_literal(DATA_TYPE_CHAR, &$1, &$$) != 0) {
+                        YYERROR;
+                }
         }
         | STRING_LIT
         {
-                $$ = DATA_TYPE_STRING;
-                free($1); //XXX
+                if (sem_expr_literal(DATA_TYPE_STRING, $1, &$$) != 0) {
+                        YYERROR;
+                }
         }
 
           /* Identifier aka variable. */
         | IDENTIFIER
         {
-                if (sem_expr_identifier($1, &$$) != 0) { //put data type into $$
+                if (sem_expr_identifier($1, &$$) != 0) { //put block_rec into $$
                         YYERROR;
                 }
         }
 
          /* Parenthesis, cast and function call. */
          /* TODO: associativity */
-        | '(' expression ')' { $$ = $2; }
+        | '(' expression ')' { $$ = $2; /* copy block_record further */ }
         | '(' data_type ')' expression
         {
-                if (sem_expr_cast($2, $4) != 0) {
+                if (sem_expr_cast($2, $4, &$$) != 0) { //put block_rec into $$
                         YYERROR;
                 }
-
-                $$ = $2; //cast was successful, use new data type
         }
-        | function_call { $$ = $1; }
+        | function_call { $$ = $1; /* copy block_record further */ }
 
           /* Logical unary negation. */
         | '!' expression %prec NEG
         {
-                if ($2 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "!", "incompatible data type");
+                if (sem_expr_integer_unary($2, &$$, OPERATOR_NEG) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT;
         }
 
           /* Integer multiplicative. */
         | expression '*' expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "*", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_MUL) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT;
         }
         | expression '/' expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "/", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_DIV) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT;
         }
         | expression '%' expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "%", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_MOD) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT;
         }
 
           /* Integer additive. */
         | expression '+' expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "+", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_ADD) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT;
         }
         | expression '-' expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "-", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_SUB) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT;
         }
 
           /* Relation. */
         | expression '<' expression
         {
-                if ($1 != $3) {
-                        set_error(RET_SEMANTIC, "<", "incompatible data types");
+                if (sem_expr_relation($1, $3, &$$, OPERATOR_SLT) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
         | expression LE_OP expression
         {
-                if ($1 != $3) {
-                        set_error(RET_SEMANTIC, "<=","incompatible data types");
+                if (sem_expr_relation($1, $3, &$$, OPERATOR_SLET) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
         | expression '>' expression
         {
-                if ($1 != $3) {
-                        set_error(RET_SEMANTIC, ">", "incompatible data types");
+                if (sem_expr_relation($1, $3, &$$, OPERATOR_SGT) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
         | expression GE_OP expression
         {
-                if ($1 != $3) {
-                        set_error(RET_SEMANTIC, ">=","incompatible data types");
+                if (sem_expr_relation($1, $3, &$$, OPERATOR_SGET) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
-
-          /* Comparison. */
         | expression EQ_OP expression
         {
-                if ($1 != $3) {
-                        set_error(RET_SEMANTIC, "==","incompatible data types");
+                if (sem_expr_relation($1, $3, &$$, OPERATOR_SE) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
         | expression NE_OP expression
         {
-                if ($1 != $3) {
-                        set_error(RET_SEMANTIC, "!=","incompatible data types");
+                if (sem_expr_relation($1, $3, &$$, OPERATOR_SNE) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
 
           /* Logical AND. */
         | expression AND_OP expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "&&", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_AND) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
 
           /* Logical OP. */
         | expression OR_OP expression
         {
-                if ($1 != DATA_TYPE_INT || $3 != DATA_TYPE_INT) {
-                        set_error(RET_SEMANTIC, "||", "incompatible data type");
+                if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_OR) != 0) {
                         YYERROR;
                 }
-
-                $$ = DATA_TYPE_INT; //actually 0 or 1
         }
         ;
 
@@ -582,12 +558,6 @@ type:
 static void yyerror (char const *s)
 {
         fprintf(stderr, "%s\n", s);
-}
-
-static void set_error(int code, const char *id, const char *message)
-{
-        print_error(code, id, message);
-        return_code = code;
 }
 
 
@@ -800,6 +770,7 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
                 }
 
                 param_br->symbol_type = param_type;
+                param_br->tac_num = tac_cntr++; //assign unique TAC number
                 if (block_put(top_block, param_id, param_br) == NULL) {
                         return 1; //two parameters of the same ID
                 }
@@ -838,6 +809,7 @@ static int sem_variable_definition_statement(data_type_t data_type,
                 }
 
                 br->symbol_type = data_type; //same type for the whole list
+                br->tac_num = tac_cntr++; //assign unique TAC number
                 if (block_put(top_block, id, br) == NULL) {
                         return 1; //two variables in this block of the same ID
                 }
@@ -852,26 +824,27 @@ static int sem_variable_definition_statement(data_type_t data_type,
         return 0; //success
 }
 
-static int sem_assignment_statement(char *id, data_type_t dt)
+static int sem_assignment_statement(char *id, struct block_record expr_br)
 {
-        const struct block_record *br;
+        const struct block_record *id_br; //fetched block record for ID
 
 
         assert(id != NULL);
 
-        br = block_get(top_block, id);
-        if (br == NULL) {
+        id_br = block_get(top_block, id);
+        if (id_br == NULL) {
                 set_error(RET_SEMANTIC, id, "used in assignment, but "
                           "undeclared");
                 return 1;
         }
 
         /* Data types have to be equal. Only int, char and string is allowed. */
-        if (br->symbol_type != dt) {
+        if (expr_br.symbol_type != id_br->symbol_type) {
                 set_error(RET_SEMANTIC, id, "assignment data type mismatch");
                 return 1;
-        } else if (dt != DATA_TYPE_INT && dt != DATA_TYPE_CHAR &&
-                   dt != DATA_TYPE_STRING) {
+        } else if (id_br->symbol_type != DATA_TYPE_INT &&
+                   id_br->symbol_type != DATA_TYPE_CHAR &&
+                   id_br->symbol_type != DATA_TYPE_STRING) {
                 set_error(RET_SEMANTIC, id, "unsupported assignment data type");
                 return 1;
         }
@@ -879,52 +852,61 @@ static int sem_assignment_statement(char *id, data_type_t dt)
         free(id); //no longer needed
 
 
-        return 0;
+        /* Generate TAC. */
+        instr.data_type = id_br->symbol_type;
+        instr.res_num = id_br->tac_num;
+        instr.operator = OPERATOR_ASSIGN; //unary
+
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.var_num = expr_br.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }
 
-static int sem_selection_statement(data_type_t dt)
+static int sem_selection_statement(struct block_record expr_br)
 {
-        if (dt != DATA_TYPE_INT) {
+        if (expr_br.symbol_type != DATA_TYPE_INT) {
                 set_error(RET_SEMANTIC, "if","unsupported contition data type");
                 return 1;
         }
 
 
-        return 0;
+        return 0; //success
 }
 
-static int sem_iteration_statement(data_type_t dt)
+static int sem_iteration_statement(struct block_record expr_br)
 {
-        if (dt != DATA_TYPE_INT) {
+        if (expr_br.symbol_type != DATA_TYPE_INT) {
                 set_error(RET_SEMANTIC, "while","unsupported contition data "
                           "type");
                 return 1;
         }
 
 
-        return 0;
+        return 0; //success
 }
 
 static int sem_function_call(char *id, struct var_list *call_type_list,
-                      data_type_t *ret_dt)
+                             struct block_record *ret_br)
 {
-        const struct block_record *br;
+        const struct block_record *id_br;
 
 
-        assert(id != NULL);
+        assert(id != NULL && ret_br != NULL);
 
-        br = block_get(top_block, id);
-        if (br == NULL) {
+        id_br = block_get(top_block, id);
+        if (id_br == NULL) {
                 set_error(RET_SEMANTIC, id, "called, but undeclared");
                 return 1;
-        } else if (br->symbol_type != DATA_TYPE_FUNCTION) {
+        } else if (id_br->symbol_type != DATA_TYPE_FUNCTION) {
                 set_error(RET_SEMANTIC, id, "called, but not declared as "
                           "function");
                 return 1;
         }
 
         /* Check for type list equality. */
-        if (!var_list_are_equal(br->var_list, call_type_list)) {
+        if (!var_list_are_equal(id_br->var_list, call_type_list)) {
                 set_error(RET_SEMANTIC, id, "declaration/definition and call "
                           "type mismatch");
                 return 1;
@@ -935,7 +917,8 @@ static int sem_function_call(char *id, struct var_list *call_type_list,
                 var_list_free(call_type_list);
         }
 
-        *ret_dt = br->ret_type;
+        ret_br->symbol_type = id_br->ret_type;
+        ret_br->tac_num = tac_cntr++;
 
         //for (size_t i = 0; i < params_cnt; ++i) {
         //        printf("push(t%zu)\n", expr_res - i - 1);
@@ -944,11 +927,11 @@ static int sem_function_call(char *id, struct var_list *call_type_list,
         return 0; //success
 }
 
-static int sem_return_statement(data_type_t data_type)
+static int sem_return_statement(struct block_record expr_br)
 {
         assert(top_block->callee_br->symbol_type == DATA_TYPE_FUNCTION);
 
-        if (top_block->callee_br->ret_type != data_type) {
+        if (top_block->callee_br->ret_type != expr_br.symbol_type) {
                 set_error(RET_SEMANTIC, NULL, "return type mismatch");
                 return 1;
         }
@@ -958,43 +941,183 @@ static int sem_return_statement(data_type_t data_type)
 }
 
 
-static int sem_expr_identifier(char *id, data_type_t *data_type)
+static int sem_expr_literal(data_type_t data_type, void *data,
+                             struct block_record *res_br)
 {
-        const struct block_record *br;
+        res_br->symbol_type = data_type;
+        res_br->tac_num = tac_cntr++;
+
+        /* Generate TAC. */
+        instr.data_type = res_br->symbol_type;
+        instr.res_num = res_br->tac_num;
+        instr.operator = OPERATOR_ASSIGN; //unary
+
+        instr.op1.type = OPERAND_TYPE_LITERAL;
+
+        switch (data_type) {
+        case DATA_TYPE_INT:
+                instr.op1.value.int_val = *(int *)data;
+                break;
+        case DATA_TYPE_CHAR:
+                instr.op1.value.char_val = *(char *)data;
+                break;
+        case DATA_TYPE_STRING:
+                instr.op1.value.string_val = (char *)data;
+                break;
+        default:
+                assert(!"bad literal data type");
+        }
 
 
-        assert(id != NULL);
+        return tac_add(tac, instr); //success or memory exhaustion
+}
 
-        br = block_get(top_block, id);
-        if (br == NULL) {
+static int sem_expr_identifier(char *id, struct block_record *expr_br)
+{
+        const struct block_record *id_br;
+
+
+        assert(id != NULL && expr_br != NULL);
+
+        id_br = block_get(top_block, id);
+        if (id_br == NULL) {
                 set_error(RET_SEMANTIC, id, "used in expression, but "
                           "undeclared");
                 return 1;
         }
 
         free(id); //no longer needed
-        *data_type = br->symbol_type;
+        *expr_br = *id_br; //copy ID block record into expression block record
 
 
         return 0; //success
 }
 
-static int sem_expr_cast(data_type_t dt_to, data_type_t dt_from)
+static int sem_expr_cast(data_type_t dt_to, struct block_record expr_br,
+                         struct block_record *res_br)
 {
-        if (dt_from == dt_to) {
+        assert(res_br != NULL);
+
+        if (expr_br.symbol_type == dt_to) {
                 //cast to the same type, no operation
-                return 0; //success
-        } else if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_STRING) {
-                //character to one character long string
-                return 0; //success
-        } else if (dt_from == DATA_TYPE_CHAR && dt_to == DATA_TYPE_INT) {
-                //character's ASCII value to int
-                return 0;
-        } else if (dt_from == DATA_TYPE_INT && dt_to == DATA_TYPE_CHAR) {
-                //integer's LSB to character
-                return 0;
+        } else if (expr_br.symbol_type == DATA_TYPE_CHAR &&
+                   dt_to == DATA_TYPE_STRING) {
+                /* Character to one character long string. */
+                instr.operator = OPERATOR_CAST_CHAR_TO_STRING; //unary
+        } else if (expr_br.symbol_type == DATA_TYPE_CHAR &&
+                   dt_to == DATA_TYPE_INT) {
+                /* Character's ASCII value to integer. */
+                instr.operator = OPERATOR_CAST_CHAR_TO_INT; //unary
+        } else if (expr_br.symbol_type == DATA_TYPE_INT &&
+                   dt_to == DATA_TYPE_CHAR) {
+                /* Integer's LSB to character. */
+                instr.operator = OPERATOR_CAST_INT_TO_CHAR; //unary
         } else {
                 set_error(RET_SEMANTIC, NULL, "ilegal cast");
                 return 1; //failure
         }
+
+        *res_br = expr_br; //copy block_record further, but
+        res_br->symbol_type = dt_to; //change symbol type to desired type
+        res_br->tac_num = tac_cntr++;
+
+        /* Generate TAC. */
+        instr.data_type = expr_br.symbol_type; //put source data type into TAC
+        instr.res_num = res_br->tac_num;
+
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.var_num = expr_br.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_expr_integer_unary(struct block_record op,
+                                  struct block_record *res_br,
+                                  operator_t operator)
+{
+        assert(res_br != NULL);
+
+        if (op.symbol_type != DATA_TYPE_INT) {
+                set_error(RET_SEMANTIC, operator_symbol[operator],
+                          "incompatible data type");
+                return 1;
+        }
+
+
+        res_br->symbol_type = DATA_TYPE_INT;
+        res_br->tac_num = tac_cntr++;
+
+        /* Generate TAC. */
+        instr.data_type = res_br->symbol_type;
+        instr.res_num = res_br->tac_num;
+        instr.operator = operator; //unary
+
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.var_num = op.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_expr_integer_binary(struct block_record op1,
+                                   struct block_record op2,
+                                   struct block_record *res_br,
+                                   operator_t operator)
+{
+        assert(res_br != NULL);
+
+        if (op1.symbol_type != DATA_TYPE_INT ||
+            op2.symbol_type != DATA_TYPE_INT) {
+                set_error(RET_SEMANTIC, operator_symbol[operator],
+                          "incompatible data type");
+                return 1;
+        }
+
+
+        res_br->symbol_type = DATA_TYPE_INT; //0 or 1 only for logical AND OR
+        res_br->tac_num = tac_cntr++;
+
+        /* Generate TAC. */
+        instr.data_type = res_br->symbol_type;
+        instr.res_num = res_br->tac_num;
+        instr.operator = operator; //binary
+
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.var_num = op1.tac_num;
+
+        instr.op2.type = OPERAND_TYPE_VARIABLE;
+        instr.op2.value.var_num = op2.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_expr_relation(struct block_record op1, struct block_record op2,
+                             struct block_record *res_br, operator_t operator)
+{
+        assert(res_br != NULL);
+
+        if (op1.symbol_type != op2.symbol_type) {
+                set_error(RET_SEMANTIC, operator_symbol[operator],
+                          "incompatible data types");
+                return 1;
+        }
+
+        res_br->symbol_type = DATA_TYPE_INT; //actually 0 or 1
+        res_br->tac_num = tac_cntr++;
+
+        /* Generate TAC. */
+        instr.data_type = op1.symbol_type;
+        instr.res_num = res_br->tac_num;
+        instr.operator = operator; //binary
+
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.var_num = op1.tac_num;
+
+        instr.op2.type = OPERAND_TYPE_VARIABLE;
+        instr.op2.value.var_num = op2.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }

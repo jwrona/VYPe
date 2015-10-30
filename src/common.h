@@ -17,6 +17,9 @@ typedef enum { //program return error codes
 } return_code_t;
 
 
+extern return_code_t return_code; //global return code variable
+
+
 static inline const char *get_prefix(return_code_t code)
 {
         switch (code) {
@@ -55,6 +58,12 @@ static inline void print_warning(return_code_t code, const char *id,
         } else {
                 fprintf(stderr, "%s warning: %s\n", get_prefix(code), message);
         }
+}
+
+static inline void set_error(int code, const char *id, const char *message)
+{
+        print_error(code, id, message);
+        return_code = code;
 }
 
 

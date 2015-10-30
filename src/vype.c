@@ -1,5 +1,5 @@
 #include "common.h"
-
+#include "tac.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +15,7 @@ extern FILE *yyin; //defined in scanner.c
 
 
 return_code_t return_code = RET_OK; //set also by parser
+struct tac *tac;
 
 
 int main(int argc, char **argv)
@@ -24,6 +25,7 @@ int main(int argc, char **argv)
         int yyret;
 
 
+        /* Handle command line arguments. */
         if (argc == 2) {
                 input_file_name = argv[1];
                 output_file_name = DEFAULT_OUTPUT_FILE;
@@ -36,18 +38,33 @@ int main(int argc, char **argv)
         }
 
 
+        /* Initialize TAC and open input file. */
+        tac = tac_init();
+        if (tac == NULL) {
+                print_error(RET_INTERNAL, __func__, "memory exhausted");
+                return RET_INTERNAL;
+        }
+
         yyin = fopen(input_file_name, "r");
         if (yyin == NULL) {
                 print_error(RET_INTERNAL, input_file_name, strerror(errno));
                 return RET_INTERNAL;
         }
 
+        /* Parsing, semantic checks and TAC generation. */
         yyret = yyparse(&return_code);
 
         if (fclose(yyin) != 0) {
                 print_error(RET_INTERNAL, input_file_name, strerror(errno));
         }
         yylex_destroy();
+
+
+        if (return_code == RET_OK && yyret == 0) { //parsing was successfull
+                tac_print(tac);
+        }
+
+        tac_free(tac);
 
 
         if (return_code == RET_OK && yyret != 0) {

@@ -12,6 +12,7 @@ typedef enum {
         DATA_TYPE_FUNCTION,
 } data_type_t;
 
+extern const char *data_type_str[];
 
 struct var_list * var_list_init(void);
 void var_list_free(struct var_list *vl);
@@ -24,9 +25,6 @@ data_type_t var_list_it_next(struct var_list *vl, const char **id);
 
 int var_list_are_equal(const struct var_list *vl_a,
                 const struct var_list *vl_b);
-
-size_t var_list_get_length(const struct var_list *vl);
-char * var_list_to_str(const struct var_list *vl);
 
 
 #endif //DATA_TYPE_H

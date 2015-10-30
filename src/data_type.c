@@ -14,7 +14,16 @@ struct vl_node { //var_list node
 struct var_list { //variable list structure
         struct vl_node *head; //pointer to the first node or NULL
         struct vl_node *iter; //pointer to the current iterator node
-        size_t length;
+};
+
+
+const char *data_type_str[] = {
+        "unset",
+        "void",
+        "int",
+        "char",
+        "string",
+        "function",
 };
 
 
@@ -66,7 +75,6 @@ int var_list_push(struct var_list *vl, const char *id, data_type_t data_type)
                 }
                 last->next = new;
         }
-        vl->length++;
 
 
         return 0; //success
@@ -132,28 +140,4 @@ int var_list_are_equal(const struct var_list *vl_a, const struct var_list *vl_b)
                 na = na->next;
                 nb = nb->next;
         }
-}
-
-size_t var_list_get_length(const struct var_list *vl)
-{
-        assert(vl != NULL);
-
-        return vl->length;
-}
-
-char * var_list_to_str(const struct var_list *vl)
-{
-        static char str[1024];
-        size_t off = 0;
-
-
-        assert(vl != NULL);
-
-        str[0] = '\0'; //in case list is empty
-        for (struct vl_node *n = vl->head; n != NULL; n = n->next) {
-                off += sprintf(str + off, "%d, ", n->data_type);
-        }
-
-
-        return str;
 }
