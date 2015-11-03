@@ -54,6 +54,7 @@ typedef enum {
         OPERAND_TYPE_LITERAL,
 } operand_type_t;
 
+
 struct tac_operand {
         operand_type_t type; //variable or literal
         union {
@@ -72,6 +73,14 @@ struct tac_instruction {
         struct tac_operand op1;
         struct tac_operand op2;
 };
+
+struct tac { //three address code structure
+        struct tac_instruction *instructions; //array of instructions
+        size_t instructions_cnt; //number of instructions in the array
+
+        size_t size; //actual array size
+};
+
 
 extern const char *operator_str[];
 extern const char *operator_symbol[];

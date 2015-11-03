@@ -6,13 +6,6 @@
 
 #define TAC_INIT_SIZE 128
 
-struct tac { //three address code structure
-        struct tac_instruction *instructions; //array of instructions
-        size_t instructions_cnt; //number of instructions in the array
-
-        size_t size; //actual array size
-};
-
 
 const char *operator_str[] = {
         "---UNSET---",
