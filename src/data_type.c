@@ -96,6 +96,26 @@ data_type_t var_list_it_first(struct var_list *vl, const char **id)
         }
 }
 
+/* Iterator: get last. */
+data_type_t var_list_it_last(struct var_list *vl, const char **id)
+{
+        assert(id != NULL);
+
+        if (vl == NULL || vl->head == NULL) {
+                *id = NULL; //return ID
+                return DATA_TYPE_UNSET; //list is empty
+        } else { //get last node
+                vl->iter = vl->head;
+
+                while (vl->iter->next != NULL) {
+                        vl->iter = vl->iter->next;
+                }
+
+                *id = vl->iter->id; //return ID
+                return vl->iter->data_type; //return TYPE
+        }
+}
+
 /* Iterator: get next. */
 data_type_t var_list_it_next(struct var_list *vl, const char **id)
 {
@@ -106,6 +126,27 @@ data_type_t var_list_it_next(struct var_list *vl, const char **id)
                 return DATA_TYPE_UNSET; //end of list
         } else { //get next node
                 vl->iter = vl->iter->next;
+
+                *id = vl->iter->id; //return ID
+                return vl->iter->data_type; //return TYPE
+        }
+}
+
+/* Iterator: get previous. */
+data_type_t var_list_it_prev(struct var_list *vl, const char **id)
+{
+        assert(id != NULL);
+
+        if (vl->iter == vl->head) {
+                *id = NULL; //return ID
+                return DATA_TYPE_UNSET; //list is empty
+        } else { //get previous node
+                struct vl_node *prev = vl->head;
+
+                while (prev->next != vl->iter) {
+                        prev = prev->next;
+                }
+                vl->iter = prev;
 
                 *id = vl->iter->id; //return ID
                 return vl->iter->data_type; //return TYPE
