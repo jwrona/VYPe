@@ -6,12 +6,23 @@
 
 
 typedef enum {
+        OPERATOR_UNSET, //special value
+
+        _OPERATOR_NULLARY,
+        OPERATOR_POP, //stack pop
+
         _OPERATOR_UNARY,
         OPERATOR_ASSIGN,  //res = op1
         OPERATOR_NEG,  //res = !op1
         OPERATOR_CAST_INT_TO_CHAR, //integer's LSB to character
         OPERATOR_CAST_CHAR_TO_INT, //character's ASCII value to int
         OPERATOR_CAST_CHAR_TO_STRING, //character to one character long string
+
+        OPERATOR_LABEL, //label
+        OPERATOR_JUMP, //unconditional jump, goto op1
+        OPERATOR_CALL, //function call
+        OPERATOR_RETURN, //return from function call
+        OPERATOR_PUSH, //stack push
 
         _OPERATOR_BINARY,
         /* Additive and multiplicative. */
@@ -32,17 +43,21 @@ typedef enum {
         /* Logical. */
         OPERATOR_AND, //res = op1 && op2
         OPERATOR_OR,  //res = op1 || op2
+
+        OPERATOR_BZERO, //if (op1 == 0) goto op2
 } operator_t;
 
 typedef enum {
+        OPERAND_TYPE_UNUSED,
         OPERAND_TYPE_VARIABLE,
+        OPERAND_TYPE_LABEL,
         OPERAND_TYPE_LITERAL,
 } operand_type_t;
 
 struct tac_operand {
         operand_type_t type; //variable or literal
         union {
-                unsigned var_num; //variable number
+                unsigned num; //variable/label number
                 int int_val; //integer literal value
                 char char_val; //character literal value
                 char *string_val; //string literal value

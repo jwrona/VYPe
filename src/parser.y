@@ -4,9 +4,11 @@
 #include "data_type.h"
 #include "hash_table.h"
 #include "tac.h"
+#include "stack.h"
 
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 
 
 typedef enum {
@@ -62,10 +64,15 @@ static int sem_post_function_definition(void);
 static int sem_variable_definition_statement(data_type_t data_type,
                                       struct var_list *id_list);
 static int sem_assignment_statement(char *id, struct block_record expr_br);
-static int sem_selection_statement(struct block_record expr_br);
-static int sem_iteration_statement(struct block_record expr_br);
+static int sem_pre_selection_statement(struct block_record expr_br);
+static int sem_mid_selection_statement(void);
+static int sem_post_selection_statement(void);
+static int sem_pre_iteration_statement(void);
+static int sem_mid_iteration_statement(struct block_record expr_br);
+static int sem_post_iteration_statement(void);
 static int sem_function_call(char *id, struct var_list *call_type_list,
                              struct block_record *ret_br);
+static int sem_expression_list(struct block_record expr_br);
 static int sem_return_statement(struct block_record expr_br);
 
 static int sem_expr_literal(data_type_t data_type, void *data,
@@ -86,7 +93,9 @@ static int sem_expr_relation(struct block_record op1, struct block_record op2,
 
 static struct block *top_block = NULL; //pointer to current block
 static struct tac_instruction instr; //three address code instruction
-static unsigned tac_cntr = 0; //three address code result counter
+static unsigned tac_res_cntr = 1; //three address code result counter
+static unsigned tac_label_cntr = 1; //three address code label counter
+static struct stack label_stack = {0}; //selection/iteration stmnt label stack
 
 extern struct tac *tac; //three address code
 %}
@@ -324,9 +333,21 @@ assignment_statement:
 
 /* Selection statement. */
 selection_statement:
-          IF '(' expression ')' compound_statement ELSE compound_statement
+          IF '(' expression ')'
+        { //mid-rule action
+                if (sem_pre_selection_statement($3) != 0) {
+                        YYERROR;
+                }
+        }
+          compound_statement ELSE
+        { //mid-rule action
+                if (sem_mid_selection_statement() != 0) {
+                        YYERROR;
+                }
+        }
+          compound_statement
         {
-                if (sem_selection_statement($3) != 0) {
+                if (sem_post_selection_statement() != 0) {
                         YYERROR;
                 }
         }
@@ -334,9 +355,21 @@ selection_statement:
 
 /* Iteration statement. */
 iteration_statement:
-          WHILE '(' expression ')' compound_statement
+          WHILE
+        { //mid-rule action
+                if (sem_pre_iteration_statement() != 0) {
+                        YYERROR;
+                }
+        }
+          '(' expression ')'
+        { //mid-rule action
+                if (sem_mid_iteration_statement($4) != 0) {
+                        YYERROR;
+                }
+        }
+          compound_statement
         {
-                if (sem_iteration_statement($3) != 0) {
+                if (sem_post_iteration_statement() != 0) {
                         YYERROR;
                 }
         }
@@ -367,11 +400,19 @@ expression_list:
                         set_error(RET_INTERNAL, __func__, "memory exhausted");
                         YYERROR;
                 }
+
+                if (sem_expression_list($1) != 0) {
+                        YYERROR;
+                }
         }
         | expression_list ',' expression
         {
                 if (var_list_push($1, NULL, $3.symbol_type) != 0) {
                         set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        YYERROR;
+                }
+
+                if (sem_expression_list($3) != 0) {
                         YYERROR;
                 }
         }
@@ -382,7 +423,8 @@ return_statement:
           RETURN
         {
                 struct block_record br = {
-                        .symbol_type = DATA_TYPE_VOID
+                        .symbol_type = DATA_TYPE_VOID,
+                        .tac_num = 0
                 };
 
                 if (sem_return_statement(br) != 0) {
@@ -527,7 +569,7 @@ expression:
                 }
         }
 
-          /* Logical OP. */
+          /* Logical OR. */
         | expression OR_OP expression
         {
                 if (sem_expr_integer_binary($1, $3, &$$, OPERATOR_OR) != 0) {
@@ -677,6 +719,7 @@ static int sem_function_declaration(const char *id, data_type_t ret_type,
         }
 
         br->symbol_type = DATA_TYPE_FUNCTION;
+        br->tac_num = tac_label_cntr++; //assign unique TAC label
         br->func_state = FUNC_STATE_DECLARED;
         br->var_list = type_list; //possible NULL for VOID type list
         br->ret_type = ret_type;
@@ -687,7 +730,7 @@ static int sem_function_declaration(const char *id, data_type_t ret_type,
         }
 
 
-        return 0; //success
+        return 0; //success, no TAC instructions needed
 }
 
 static int sem_pre_function_definition(char *id, data_type_t ret_type,
@@ -743,14 +786,25 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
 
                 /* Insert record into symbol table. Error should not happen. */
                 assert(block_put(top_block, id, br) != NULL);
+
+                br->symbol_type = DATA_TYPE_FUNCTION;
+                br->tac_num = tac_label_cntr++; //assign unique TAC label
+                br->ret_type = ret_type;
         }
 
         /* Update record in level 0 block. */
-        br->symbol_type = DATA_TYPE_FUNCTION;
         br->func_state = FUNC_STATE_DEFINED;
         br->var_list = type_list; //possible NULL for VOID type list
-        br->ret_type = ret_type;
 
+        /* Generate TAC for the label. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_LABEL; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = br->tac_num;
+        if (tac_add(tac, instr) != 0) { //success or memory exhaustion
+                return 1;
+        }
 
         /* Create new level 1 block for function and its parameters. */
         top_block = block_init(top_block, br);
@@ -759,7 +813,7 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
         }
 
         /* Add all params into symbol table for the function block. */
-        param_type = var_list_it_first(br->var_list, &param_id); //first
+        param_type = var_list_it_last(br->var_list, &param_id);
         while (param_type != DATA_TYPE_UNSET) {
                 struct block_record *param_br =
                                            malloc(sizeof (struct block_record));
@@ -770,12 +824,21 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
                 }
 
                 param_br->symbol_type = param_type;
-                param_br->tac_num = tac_cntr++; //assign unique TAC number
+                param_br->tac_num = tac_res_cntr++; //assign unique TAC number
                 if (block_put(top_block, param_id, param_br) == NULL) {
                         return 1; //two parameters of the same ID
                 }
 
-                param_type = var_list_it_next(br->var_list, &param_id);
+                /* Generate TAC for parameter pop. */
+                memset(&instr, 0, sizeof (struct tac_instruction));
+                instr.data_type = param_br->symbol_type;
+                instr.res_num = param_br->tac_num;
+                instr.operator = OPERATOR_POP; //nullary
+                if (tac_add(tac, instr) != 0) { //success or memory exhaustion
+                        return 1;
+                }
+
+                param_type = var_list_it_prev(br->var_list, &param_id);
         }
 
 
@@ -784,9 +847,33 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
 
 static int sem_post_function_definition(void)
 {
+        assert(top_block->callee_br->symbol_type == DATA_TYPE_FUNCTION);
+
+        /* Generate TAC for the implicit return. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.data_type = top_block->callee_br->ret_type;
+        instr.operator = OPERATOR_RETURN; //unary
+
+        instr.op1.type = OPERAND_TYPE_LITERAL;
+        switch (top_block->callee_br->ret_type) {
+        case DATA_TYPE_VOID:
+                instr.op1.type = OPERAND_TYPE_VARIABLE; //void cannot be literal
+                break;
+        case DATA_TYPE_INT:
+                break; //value zeroed by memset
+        case DATA_TYPE_CHAR:
+                break; //value zeroed by memset
+        case DATA_TYPE_STRING:
+                instr.op1.value.string_val = strdup("");
+                break;
+        default:
+                assert(!"bad literal data type");
+        }
+
         top_block = block_free(top_block); //clear function symbol table
 
-        return 0;
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }
 
 static int sem_variable_definition_statement(data_type_t data_type,
@@ -809,9 +896,33 @@ static int sem_variable_definition_statement(data_type_t data_type,
                 }
 
                 br->symbol_type = data_type; //same type for the whole list
-                br->tac_num = tac_cntr++; //assign unique TAC number
+                br->tac_num = tac_res_cntr++; //assign unique TAC number
                 if (block_put(top_block, id, br) == NULL) {
                         return 1; //two variables in this block of the same ID
+                }
+
+                /* Generate TAC for the implicit variable initialization. */
+                memset(&instr, 0, sizeof (struct tac_instruction));
+                instr.data_type = br->symbol_type;
+                instr.res_num = br->tac_num;
+                instr.operator = OPERATOR_ASSIGN; //unary
+
+                instr.op1.type = OPERAND_TYPE_LITERAL;
+                switch (instr.data_type) {
+                case DATA_TYPE_INT:
+                        instr.op1.value.int_val = 0;
+                        break;
+                case DATA_TYPE_CHAR:
+                        instr.op1.value.char_val = '\0';
+                        break;
+                case DATA_TYPE_STRING:
+                        instr.op1.value.string_val = strdup("");
+                        break;
+                default:
+                        assert(!"bad literal data type");
+                }
+                if (tac_add(tac, instr) != 0) { //success or memory exhaustion
+                        return 1;
                 }
 
                 dt = var_list_it_next(id_list, &id);
@@ -852,30 +963,117 @@ static int sem_assignment_statement(char *id, struct block_record expr_br)
         free(id); //no longer needed
 
 
-        /* Generate TAC. */
+        /* Generate TAC for the assignment. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
         instr.data_type = id_br->symbol_type;
         instr.res_num = id_br->tac_num;
         instr.operator = OPERATOR_ASSIGN; //unary
 
         instr.op1.type = OPERAND_TYPE_VARIABLE;
-        instr.op1.value.var_num = expr_br.tac_num;
+        instr.op1.value.num = expr_br.tac_num;
 
 
         return tac_add(tac, instr); //success or memory exhaustion
 }
 
-static int sem_selection_statement(struct block_record expr_br)
+static int sem_pre_selection_statement(struct block_record expr_br)
 {
         if (expr_br.symbol_type != DATA_TYPE_INT) {
                 set_error(RET_SEMANTIC, "if","unsupported contition data type");
                 return 1;
         }
 
+        /* Generate TAC for the branch to the ELSE compound statement. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_BZERO; //binary
 
-        return 0; //success
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.num = expr_br.tac_num;
+
+        instr.op2.type = OPERAND_TYPE_LABEL;
+        instr.op2.value.num = tac_label_cntr++; //ELSE label
+
+        if (stack_push(&label_stack, instr.op2.value.num) != 0) {
+                set_error(RET_INTERNAL, "stack_push", "label stack full");
+                return 1;
+        }
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }
 
-static int sem_iteration_statement(struct block_record expr_br)
+static int sem_mid_selection_statement(void)
+{
+        unsigned else_label;
+
+
+        assert(stack_pop(&label_stack, &else_label) == 0);
+
+        /* Generate TAC for the jump to the END of the selection statement. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_JUMP; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = tac_label_cntr++; //END label
+
+        if (stack_push(&label_stack, instr.op1.value.num) != 0) {
+                set_error(RET_INTERNAL, "stack_push", "label stack full");
+                return 1;
+        }
+
+        if (tac_add(tac, instr) != 0) { //success or memory exhaustion
+                return 1;
+        }
+
+
+        /* Generate TAC for the label of the ELSE branch. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_LABEL; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = else_label; //popped ELSE label
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_post_selection_statement(void)
+{
+        unsigned end_label;
+
+
+        assert(stack_pop(&label_stack, &end_label) == 0);
+
+        /* Generate TAC for the label of the END of the selection statement. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_LABEL; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = end_label; //popped ELSE label
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+
+static int sem_pre_iteration_statement(void)
+{
+        /* Generate TAC for the label of the beginning of the WHILE statement.*/
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_LABEL; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = tac_label_cntr++; //WHILE before expression label
+
+        if (stack_push(&label_stack, instr.op1.value.num) != 0) {
+                set_error(RET_INTERNAL, "stack_push", "label stack full");
+                return 1;
+        }
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_mid_iteration_statement(struct block_record expr_br)
 {
         if (expr_br.symbol_type != DATA_TYPE_INT) {
                 set_error(RET_SEMANTIC, "while","unsupported contition data "
@@ -883,8 +1081,54 @@ static int sem_iteration_statement(struct block_record expr_br)
                 return 1;
         }
 
+        /* Generate TAC for the branch to the end of WHILE statement. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_BZERO; //binary
 
-        return 0; //success
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.num = expr_br.tac_num;
+
+        instr.op2.type = OPERAND_TYPE_LABEL;
+        instr.op2.value.num = tac_label_cntr++; //WHILE end label
+
+        if (stack_push(&label_stack, instr.op2.value.num) != 0) {
+                set_error(RET_INTERNAL, "stack_push", "label stack full");
+                return 1;
+        }
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_post_iteration_statement(void)
+{
+        unsigned begin_label;
+        unsigned end_label;
+
+
+        assert(stack_pop(&label_stack, &end_label) == 0);
+        assert(stack_pop(&label_stack, &begin_label) == 0);
+
+        /* Generate TAC for the jump to the beginning of the WHILE statement. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_JUMP; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = begin_label; //WHILE before branch label
+
+        if (tac_add(tac, instr) != 0) { //success or memory exhaustion
+                return 1;
+        }
+
+        /* Generate TAC for the label of the end of the WHILE statement.*/
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.operator = OPERATOR_LABEL; //unary
+
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = end_label; //WHILE end label
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }
 
 static int sem_function_call(char *id, struct var_list *call_type_list,
@@ -918,13 +1162,33 @@ static int sem_function_call(char *id, struct var_list *call_type_list,
         }
 
         ret_br->symbol_type = id_br->ret_type;
-        ret_br->tac_num = tac_cntr++;
+        ret_br->tac_num = tac_res_cntr++; //will be unused, if ret type is void
 
-        //for (size_t i = 0; i < params_cnt; ++i) {
-        //        printf("push(t%zu)\n", expr_res - i - 1);
-        //}
+        /* Generate TAC for function call. Parameters are already pushed. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.data_type = ret_br->symbol_type; //return type
+        instr.res_num = ret_br->tac_num; //return variable TAC number
+        instr.operator = OPERATOR_CALL; //unary
 
-        return 0; //success
+        instr.op1.type = OPERAND_TYPE_LABEL;
+        instr.op1.value.num = id_br->tac_num; //TAC label number
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
+}
+
+static int sem_expression_list(struct block_record expr_br)
+{
+        /* Generate TAC for parameter push. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.data_type = expr_br.symbol_type;
+        instr.operator = OPERATOR_PUSH; //unary
+
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.num = expr_br.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }
 
 static int sem_return_statement(struct block_record expr_br)
@@ -936,18 +1200,27 @@ static int sem_return_statement(struct block_record expr_br)
                 return 1;
         }
 
+        /* Generate TAC for the explicit return statement. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+        instr.data_type = top_block->callee_br->ret_type;
+        instr.operator = OPERATOR_RETURN; //unary
 
-        return 0;
+        instr.op1.type = OPERAND_TYPE_VARIABLE;
+        instr.op1.value.num = expr_br.tac_num;
+
+
+        return tac_add(tac, instr); //success or memory exhaustion
 }
 
 
 static int sem_expr_literal(data_type_t data_type, void *data,
-                             struct block_record *res_br)
+                            struct block_record *res_br)
 {
         res_br->symbol_type = data_type;
-        res_br->tac_num = tac_cntr++;
+        res_br->tac_num = tac_res_cntr++;
 
         /* Generate TAC. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
         instr.data_type = res_br->symbol_type;
         instr.res_num = res_br->tac_num;
         instr.operator = OPERATOR_ASSIGN; //unary
@@ -990,7 +1263,7 @@ static int sem_expr_identifier(char *id, struct block_record *expr_br)
         *expr_br = *id_br; //copy ID block record into expression block record
 
 
-        return 0; //success
+        return 0; //success, no TAC instructions needed
 }
 
 static int sem_expr_cast(data_type_t dt_to, struct block_record expr_br,
@@ -998,8 +1271,13 @@ static int sem_expr_cast(data_type_t dt_to, struct block_record expr_br,
 {
         assert(res_br != NULL);
 
+        *res_br = expr_br; //copy block_record further
+
+        /* Generate TAC. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
+
         if (expr_br.symbol_type == dt_to) {
-                //cast to the same type, no operation
+                return 0; //cast to the same type, no operation
         } else if (expr_br.symbol_type == DATA_TYPE_CHAR &&
                    dt_to == DATA_TYPE_STRING) {
                 /* Character to one character long string. */
@@ -1017,16 +1295,14 @@ static int sem_expr_cast(data_type_t dt_to, struct block_record expr_br,
                 return 1; //failure
         }
 
-        *res_br = expr_br; //copy block_record further, but
-        res_br->symbol_type = dt_to; //change symbol type to desired type
-        res_br->tac_num = tac_cntr++;
+        res_br->symbol_type = dt_to; //change symbol type to the desired type
+        res_br->tac_num = tac_res_cntr++; //create a new TAC result
 
-        /* Generate TAC. */
         instr.data_type = expr_br.symbol_type; //put source data type into TAC
         instr.res_num = res_br->tac_num;
 
         instr.op1.type = OPERAND_TYPE_VARIABLE;
-        instr.op1.value.var_num = expr_br.tac_num;
+        instr.op1.value.num = expr_br.tac_num;
 
 
         return tac_add(tac, instr); //success or memory exhaustion
@@ -1046,15 +1322,16 @@ static int sem_expr_integer_unary(struct block_record op,
 
 
         res_br->symbol_type = DATA_TYPE_INT;
-        res_br->tac_num = tac_cntr++;
+        res_br->tac_num = tac_res_cntr++;
 
         /* Generate TAC. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
         instr.data_type = res_br->symbol_type;
         instr.res_num = res_br->tac_num;
         instr.operator = operator; //unary
 
         instr.op1.type = OPERAND_TYPE_VARIABLE;
-        instr.op1.value.var_num = op.tac_num;
+        instr.op1.value.num = op.tac_num;
 
 
         return tac_add(tac, instr); //success or memory exhaustion
@@ -1076,18 +1353,19 @@ static int sem_expr_integer_binary(struct block_record op1,
 
 
         res_br->symbol_type = DATA_TYPE_INT; //0 or 1 only for logical AND OR
-        res_br->tac_num = tac_cntr++;
+        res_br->tac_num = tac_res_cntr++;
 
         /* Generate TAC. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
         instr.data_type = res_br->symbol_type;
         instr.res_num = res_br->tac_num;
         instr.operator = operator; //binary
 
         instr.op1.type = OPERAND_TYPE_VARIABLE;
-        instr.op1.value.var_num = op1.tac_num;
+        instr.op1.value.num = op1.tac_num;
 
         instr.op2.type = OPERAND_TYPE_VARIABLE;
-        instr.op2.value.var_num = op2.tac_num;
+        instr.op2.value.num = op2.tac_num;
 
 
         return tac_add(tac, instr); //success or memory exhaustion
@@ -1105,18 +1383,19 @@ static int sem_expr_relation(struct block_record op1, struct block_record op2,
         }
 
         res_br->symbol_type = DATA_TYPE_INT; //actually 0 or 1
-        res_br->tac_num = tac_cntr++;
+        res_br->tac_num = tac_res_cntr++;
 
         /* Generate TAC. */
+        memset(&instr, 0, sizeof (struct tac_instruction));
         instr.data_type = op1.symbol_type;
         instr.res_num = res_br->tac_num;
         instr.operator = operator; //binary
 
         instr.op1.type = OPERAND_TYPE_VARIABLE;
-        instr.op1.value.var_num = op1.tac_num;
+        instr.op1.value.num = op1.tac_num;
 
         instr.op2.type = OPERAND_TYPE_VARIABLE;
-        instr.op2.value.var_num = op2.tac_num;
+        instr.op2.value.num = op2.tac_num;
 
 
         return tac_add(tac, instr); //success or memory exhaustion

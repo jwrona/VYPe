@@ -2,6 +2,7 @@
 #include "common.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #define TAC_INIT_SIZE 128
 
@@ -14,12 +15,23 @@ struct tac { //three address code structure
 
 
 const char *operator_str[] = {
+        "---UNSET---",
+
+        "", //nullary operators
+        "POP",
+
         "", //unary operators
         "ASSIGN",
         "NEG",
         "CAST_INT_TO_CHAR",
         "CAST_CHAR_TO_INT",
         "CAST_CHAR_TO_STRING",
+
+        "LABEL",
+        "JUMP",
+        "CALL",
+        "RETURN",
+        "PUSH",
 
         "", //binary operators
         /* Additive and multiplicative. */
@@ -40,15 +52,28 @@ const char *operator_str[] = {
         /* Logical. */
         "AND",
         "OR",
+
+        "BZERO",
 };
 
 const char *operator_symbol[] = {
+        "---UNSET---",
+
+        "", //nullary operators
+        "POP",
+
         "", //unary operators
         "=",
         "!",
         "CAST_INT_TO_CHAR",
         "CAST_CHAR_TO_INT",
         "CAST_CHAR_TO_STRING",
+
+        "LABEL",
+        "JUMP",
+        "CALL",
+        "RETURN",
+        "PUSH",
 
         "", //binary operators
         /* Additive and multiplicative. */
@@ -69,6 +94,8 @@ const char *operator_symbol[] = {
         /* Logical. */
         "&&",
         "||",
+
+        "BZERO",
 };
 
 
@@ -95,23 +122,53 @@ static int tac_resize(struct tac *tac)
 static void tac_operand_print(const struct tac_operand op,
                 data_type_t data_type)
 {
-        if (op.type == OPERAND_TYPE_VARIABLE) {
-                printf("t%u", op.value.var_num);
-        } else {
+        int off = 0;
+
+
+        switch (op.type) {
+        case OPERAND_TYPE_UNUSED:
+                putchar('-');
+                off++;
+                break;
+
+        case OPERAND_TYPE_VARIABLE:
+                if (op.value.num != 0) {
+                        off += printf("var: %u", op.value.num);
+                } else {
+                        off += printf("-");
+                }
+                break;
+
+        case OPERAND_TYPE_LABEL:
+                off += printf("lbl: %u", op.value.num);
+                break;
+
+        case OPERAND_TYPE_LITERAL:
                 switch (data_type) {
                 case DATA_TYPE_INT:
-                        printf("%d", op.value.int_val);
+                        off += printf("lit: %d", op.value.int_val);
                         break;
                 case DATA_TYPE_CHAR:
-                        printf("'%c'", op.value.char_val);
+                        off += printf("lit: '%c'", op.value.char_val);
                         break;
                 case DATA_TYPE_STRING:
-                        printf("\"%s\"", op.value.string_val);
+                        off += printf("lit: \"%s\"", op.value.string_val);
                         break;
                 default:
                         assert(!"bad operand data type");
                 }
+                break;
+
+        default:
+                assert(!"bad operand type");
         }
+
+        off = 30 - off;
+        if (off < 5) {
+                off = 5;
+        }
+
+        printf("%*s", off, "");
 }
 
 
@@ -161,17 +218,38 @@ void tac_print(struct tac *tac)
 {
         assert(tac != NULL);
 
-        for (size_t i = 0; i < tac->instructions_cnt; ++i) {
-                struct tac_instruction instr = tac->instructions[i];
+        printf("%-*s", 25, "instruction");
+        printf("%-*s", 8, "result");
+        printf("%-*s", 30, "operand 1");
+        printf("%-*s", 30, "operand 2");
+        printf("%s", "data type");
+        putchar('\n');
+        for (size_t i = 0; i < 102; ++i) {
+                putchar('-');
+        }
+        putchar('\n');
 
-                printf("t%u = ", instr.res_num);
-                tac_operand_print(instr.op1, instr.data_type);
-                printf(" %s ", operator_str[instr.operator]);
-
-                if (instr.operator > _OPERATOR_BINARY) {
-                        tac_operand_print(instr.op2, instr.data_type);
+        for (const struct tac_instruction *instr = tac->instructions;
+                        instr < tac->instructions + tac->instructions_cnt;
+                        ++instr)
+        {
+                if (instr->operator == OPERATOR_LABEL) {
+                        printf("%-*s", 25, operator_str[instr->operator]);
+                } else {
+                        printf("  %-*s", 23, operator_str[instr->operator]);
                 }
-
-                printf("\t%s\n", data_type_str[instr.data_type]);
+                if (instr->res_num != 0) {
+                        printf("%-*u", 8, instr->res_num);
+                } else {
+                        printf("-%-*s", 7, "");
+                }
+                tac_operand_print(instr->op1, instr->data_type);
+                tac_operand_print(instr->op2, instr->data_type);
+                if (instr->data_type != DATA_TYPE_UNSET) {
+                        printf("%s", data_type_str[instr->data_type]);
+                } else {
+                        putchar('-');
+                }
+                putchar('\n');
         }
 }
