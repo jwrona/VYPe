@@ -5,10 +5,15 @@
 #include "hash_table.h"
 #include "tac.h"
 #include "stack.h"
+#include "builtins.h"
 
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+
+
+#define MAIN_FUNCTION_NAME "main"
+#define MAIN_FUNCTION_TAC_NUM 1
 
 
 typedef enum {
@@ -55,6 +60,9 @@ static struct block_record * block_get(const struct block *block,
                                        const char *id);
 void block_record_free(struct block_record *br);
 
+static int insert_builtin(struct block *top_block,
+                          const struct function function);
+
 /* Semantic actions declarations. */
 static int sem_function_declaration(const char *id, data_type_t ret_type,
                               struct var_list *type_list);
@@ -94,10 +102,12 @@ static int sem_expr_relation(struct block_record op1, struct block_record op2,
 static struct block *top_block = NULL; //pointer to current block
 static struct tac_instruction instr; //three address code instruction
 static unsigned tac_res_cntr = 1; //three address code result counter
-static unsigned tac_label_cntr = 1; //three address code label counter
+static unsigned tac_label_cntr = 10; //three address code label counter
 static struct stack label_stack = {0}; //selection/iteration stmnt label stack
 
 extern struct tac *tac; //three address code
+extern const struct function builtins[]; //builtin functions
+extern const size_t builtins_cnt;
 %}
 
 /* pairs with bison-bridge */
@@ -150,6 +160,13 @@ extern struct tac *tac; //three address code
         if (top_block == NULL) {
                 YYERROR;
         }
+
+        /* Loop through builtin fnctions and insert every one into top block. */
+        for (size_t i = 0; i < builtins_cnt; ++i) {
+                if (insert_builtin(top_block, builtins[i]) != 0) {
+                        YYERROR;
+                }
+        }
 }
 
 %%
@@ -161,8 +178,19 @@ extern struct tac *tac; //three address code
 program:
           declaration_list
         {
+                /* Main function has to be declared exactly once. Check it! */
+                if (block_get(top_block, MAIN_FUNCTION_NAME) == NULL) {
+                        set_error(RET_SEMANTIC, MAIN_FUNCTION_NAME,
+                                  "function undeclared");
+                        YYERROR;
+                }
+
                 /* Free level 0 block for functions and global variables. */
                 top_block = block_free(top_block);
+        }
+        | declaration_list error
+        {
+                YYERROR;
         }
         ;
 
@@ -220,7 +248,8 @@ function_definition:
                 if (sem_pre_function_definition($2, $1, NULL) != 0) {
                         YYERROR;
                 }
-        } statement_list '}'
+        }
+          statement_list '}'
         {
                 if (sem_post_function_definition() != 0) {
                         YYERROR;
@@ -231,7 +260,8 @@ function_definition:
                 if (sem_pre_function_definition($2, $1, $4) != 0) {
                         YYERROR;
                 }
-        } statement_list '}'
+        }
+          statement_list '}'
         {
                 if (sem_post_function_definition() != 0) {
                         YYERROR;
@@ -697,12 +727,66 @@ void block_record_free(struct block_record *br)
         assert(br != NULL);
 
         /* If symbol was function and had some parameters, free param list. */
-        if (br->symbol_type == DATA_TYPE_FUNCTION && br->var_list != NULL) {
-                var_list_free(br->var_list);
+        if (br->symbol_type == DATA_TYPE_FUNCTION) {
+                /* Declared but not defined function is ilegal. */
+                if (br->func_state != FUNC_STATE_DEFINED) {
+                        set_error(RET_SEMANTIC, NULL,
+                                  "function declared but not defined "
+                                  "(god knows which one)");
+                }
+
+                /* If there was parameters, free parameter list. */
+                if (br->var_list != NULL) {
+                        var_list_free(br->var_list);
+                }
         }
         free(br);
 }
 
+
+static int insert_builtin(struct block *top_block,
+                          const struct function function)
+{
+        struct block_record *br = malloc(sizeof (struct block_record));
+        struct var_list *var_list = NULL; //type and parameter list
+
+
+        assert(top_block != NULL);
+
+        if (br == NULL) {
+                set_error(RET_INTERNAL, __func__, "memory exhausted");
+                return 1;
+        }
+        if (function.params_cnt > 0) {
+                var_list = var_list_init();
+                if (var_list == NULL) {
+                        set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        return 1;
+                }
+        }
+
+        /* Fill variable list with function parameters. */
+        for (size_t i = 0; i < function.params_cnt; ++i) {
+                if (var_list_push(var_list, NULL, function.params[i]) != 0) {
+                        set_error(RET_INTERNAL, __func__, "memory exhausted");
+                        return 1;
+                }
+        }
+
+        br->symbol_type = DATA_TYPE_FUNCTION;
+        br->tac_num = function.tac_num; //assign unique TAC label
+        br->func_state = FUNC_STATE_DEFINED;
+        br->var_list = var_list; //possible NULL for VOID type list
+        br->ret_type = function.ret_type;
+
+        /* Insert record into level 0 block. Redefinition is not possible. */
+        if (block_put(top_block, strdup(function.id), br) == NULL) {
+                return 1;
+        }
+
+
+        return 0; //success, no TAC instructions needed
+}
 
 /* Semantic actions definitions. */
 static int sem_function_declaration(const char *id, data_type_t ret_type,
@@ -718,8 +802,19 @@ static int sem_function_declaration(const char *id, data_type_t ret_type,
                 return 1;
         }
 
+        if (strcmp(id, MAIN_FUNCTION_NAME) == 0) { //main declaration
+                /* Check signature. */
+                if (ret_type != DATA_TYPE_INT || type_list != NULL) {
+                        set_error(RET_SEMANTIC, id, "bad function signature");
+                        return 1;
+                }
+
+                br->tac_num = MAIN_FUNCTION_TAC_NUM; //assign special TAC label
+        } else {
+                br->tac_num = tac_label_cntr++; //assign unique TAC label
+        }
+
         br->symbol_type = DATA_TYPE_FUNCTION;
-        br->tac_num = tac_label_cntr++; //assign unique TAC label
         br->func_state = FUNC_STATE_DECLARED;
         br->var_list = type_list; //possible NULL for VOID type list
         br->ret_type = ret_type;
@@ -784,12 +879,24 @@ static int sem_pre_function_definition(char *id, data_type_t ret_type,
                         return 1;
                 }
 
-                /* Insert record into symbol table. Error should not happen. */
-                assert(block_put(top_block, id, br) != NULL);
+                if (strcmp(id, MAIN_FUNCTION_NAME) == 0) { //main definition
+                        /* Check signature. */
+                        if (ret_type != DATA_TYPE_INT || type_list != NULL) {
+                                set_error(RET_SEMANTIC, id,
+                                          "bad function signature");
+                                return 1;
+                        }
+
+                        br->tac_num = MAIN_FUNCTION_TAC_NUM; //special TAC label
+                } else {
+                        br->tac_num = tac_label_cntr++; //unique TAC label
+                }
 
                 br->symbol_type = DATA_TYPE_FUNCTION;
-                br->tac_num = tac_label_cntr++; //assign unique TAC label
                 br->ret_type = ret_type;
+
+                /* Insert record into symbol table. Error should not happen. */
+                assert(block_put(top_block, id, br) != NULL);
         }
 
         /* Update record in level 0 block. */
@@ -1149,8 +1256,16 @@ static int sem_function_call(char *id, struct var_list *call_type_list,
                 return 1;
         }
 
-        /* Check for type list equality. */
-        if (!var_list_are_equal(id_br->var_list, call_type_list)) {
+        /* Check for type list equality. Print function with variable argument
+         * list requires special treatement.
+         */
+        if (strcmp(id, "print") == 0) {
+                if (call_type_list == NULL) { //empty argument list isnt allowed
+                        set_error(RET_SEMANTIC, id, "at least one parameter is "
+                                  "mandatory");
+                        return 1;
+                }
+        } else if (!var_list_are_equal(id_br->var_list, call_type_list)) {
                 set_error(RET_SEMANTIC, id, "declaration/definition and call "
                           "type mismatch");
                 return 1;

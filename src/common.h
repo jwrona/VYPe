@@ -7,6 +7,9 @@
 #include <errno.h>
 
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+
+
 typedef enum { //program return error codes
         RET_OK = 0,
         RET_LEXICAL = 1,

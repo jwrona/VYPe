@@ -175,7 +175,7 @@ int var_list_are_equal(const struct var_list *vl_a, const struct var_list *vl_b)
                 } else if (na == NULL || nb == NULL) {
                         return 0; //ony one NULL, lists are different
                 } else if (na->data_type != nb->data_type) {
-                        return 0; //data types differ -> lists are different
+                        return 0; //data types differ, lists are different
                 }
 
                 na = na->next;
