@@ -8,7 +8,7 @@ YACC=bison
 YFLAGS=--defines=parser.h --output=parser.c
 
 PROG=vype
-OBJS=parser.o scanner.o hash_table.o data_type.o tac.o vype.o
+OBJS=parser.o scanner.o hash_table.o data_type.o tac.o vype.o gen_code.o reg_alloc.o
 
 
 all: $(PROG)
