@@ -1,3 +1,9 @@
+/*
+ * project: VYPe15 programming language compiler
+ * author: Jan Wrona <xwrona00@stud.fit.vutbr.cz>
+ * author: Katerina Zmolikova <xzmoli02@stud.fit.vutbr.cz>
+ * date: 2015
+ */
 #ifndef STACK_H
 #define STACK_H
 
@@ -37,5 +43,6 @@ static inline int stack_pop(struct stack *s, unsigned *data)
 
         return 0;
 }
+
 
 #endif //STACK_H

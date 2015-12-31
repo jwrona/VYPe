@@ -1,3 +1,9 @@
+/*
+ * project: VYPe15 programming language compiler
+ * author: Jan Wrona <xwrona00@stud.fit.vutbr.cz>
+ * author: Katerina Zmolikova <xzmoli02@stud.fit.vutbr.cz>
+ * date: 2015
+ */
 #include "common.h"
 #include "tac.h"
 #include "gen_code.h"
@@ -62,17 +68,19 @@ int main(int argc, char **argv)
 
 
         if (return_code == RET_OK && yyret == 0) { //parsing was successfull
-                tac_print(tac);
-        	FILE * fout = fopen(output_file_name, "w");
-        	if (fout == NULL) {
-                	print_error(RET_INTERNAL, output_file_name, strerror(errno));
-                	return RET_INTERNAL;
-        	}
+                //tac_print(tac);
+                FILE * fout = fopen(output_file_name, "w");
+                if (fout == NULL) {
+                        print_error(RET_INTERNAL, output_file_name,
+                                        strerror(errno));
+                        return RET_INTERNAL;
+                }
 
-		generate_code(tac, fout);
-		if (fclose(fout) != 0) {
-                	print_error(RET_INTERNAL, output_file_name, strerror(errno));
-	        }
+                generate_code(tac, fout);
+                if (fclose(fout) != 0) {
+                        print_error(RET_INTERNAL, output_file_name,
+                                        strerror(errno));
+                }
         }
 
         tac_free(tac);

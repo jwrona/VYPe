@@ -1,3 +1,9 @@
+/*
+ * project: VYPe15 programming language compiler
+ * author: Jan Wrona <xwrona00@stud.fit.vutbr.cz>
+ * author: Katerina Zmolikova <xzmoli02@stud.fit.vutbr.cz>
+ * date: 2015
+ */
 #ifndef DATA_TYPE_H
 #define DATA_TYPE_H
 
